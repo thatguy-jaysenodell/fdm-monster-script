@@ -1,6 +1,6 @@
 #!/bin/bash
 # FDM Monster One-Click Installer for Linux
-# Usage: curl -fsSL https://raw.githubusercontent.com/fdm-monster/fdm-monster/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/fdm-monster/fdm-monster-scripts/main/install.sh | bash
 
 set -e
 
@@ -14,7 +14,7 @@ NPM_PACKAGE="@fdm-monster/server"
 INSTALL_DIR="$HOME/.fdm-monster"
 DATA_DIR="$HOME/.fdm-monster-data"
 DEFAULT_PORT=4000
-INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/fdm-monster/fdm-monster/main/install.sh"
+INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/fdm-monster-scripts/fdm-monster/main/install.sh"
 
 # Helper functions
 print_banner() {
