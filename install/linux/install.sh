@@ -28,7 +28,7 @@ print_banner() {
 /_/   /_____/_/  /_/  /_/  /_/\____/_/ /_/____/\__/\___/_/
 
 EOF
-    echo -e "${NC}${GREEN}FDM Monster One-Click Installer${NC}\n${BLUE}https://fdm-monster.net${NC}\n"
+    echo -e "${NC}${GREEN}FDM Monster One-Click Installer${NC} ${YELLOW}($CLI_VERSION)${NC}\n${BLUE}https://fdm-monster.net${NC}\n"
     return 0
 }
 
