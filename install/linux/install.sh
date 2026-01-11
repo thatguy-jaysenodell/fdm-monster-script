@@ -149,10 +149,16 @@ EOF
     # Install the package
     YARN_NODE_LINKER=node-modules yarn add "$NPM_PACKAGE"
 
-    # Create .env file in install dir if it doesn't exist
+    # Create .env file in data dir with environment variables
     local ENV_FILE="$DATA_DIR/.env"
     if [[ ! -f "$ENV_FILE" ]]; then
-        touch "$ENV_FILE"
+        cat > "$ENV_FILE" << EOF
+NODE_ENV=development
+SERVER_PORT=$DEFAULT_PORT
+DATABASE_PATH=$DATA_DIR/database
+MEDIA_PATH=$DATA_DIR/media
+EOF
+        print_success ".env file created at $DATA_DIR/.env"
     fi
 
     print_success "$NPM_PACKAGE installed"
@@ -177,11 +183,7 @@ After=network.target
 Type=simple
 User=$USER
 WorkingDirectory=$DATA_DIR
-Environment="NODE_ENV=development"
-Environment="SERVER_PORT=$DEFAULT_PORT"
 Environment="ENV_FILE=$DATA_DIR/.env"
-Environment="DATABASE_PATH=$DATA_DIR/database"
-Environment="MEDIA_PATH=$DATA_DIR/media"
 ExecStart=$INSTALL_DIR/nodejs/bin/node $INSTALL_DIR/node_modules/$NPM_PACKAGE/dist/index.js
 Restart=always
 RestartSec=10
