@@ -63,6 +63,43 @@ check_root() {
     return 0
 }
 
+check_dependencies() {
+    print_info "Checking required dependencies..."
+
+    local MISSING_DEPS=()
+    local REQUIRED_DEPS=("curl" "tar" "grep" "mkdir")
+
+    for cmd in "${REQUIRED_DEPS[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            MISSING_DEPS+=("$cmd")
+        fi
+    done
+
+    if [[ ${#MISSING_DEPS[@]} -gt 0 ]]; then
+        print_error "Missing required dependencies: ${MISSING_DEPS[*]}"
+        print_info "Please install the missing packages and try again"
+        exit 1
+    fi
+
+    # Check sudo availability and permissions
+    if command -v sudo &> /dev/null; then
+        if ! sudo -n true 2>/dev/null; then
+            print_warning "sudo requires password - you may be prompted during installation"
+            # Test sudo access with password prompt
+            if ! sudo -v; then
+                print_error "sudo access required for systemd service management"
+                exit 1
+            fi
+        fi
+        print_success "sudo access verified"
+    else
+        print_warning "sudo not available - systemd service setup may fail"
+    fi
+
+    print_success "All required dependencies found"
+    return 0
+}
+
 detect_platform() {
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
@@ -88,11 +125,33 @@ install_nodejs() {
     local NODE_DIR="$INSTALL_DIR/nodejs"
 
     mkdir -p "$NODE_DIR"
-    curl -fsSL "$NODE_URL" | tar -xJ -C "$NODE_DIR" --strip-components=1
+
+    if ! curl -fsSL "$NODE_URL" | tar -xJ -C "$NODE_DIR" --strip-components=1; then
+        print_error "Failed to download or extract Node.js"
+        exit 1
+    fi
 
     export PATH="$NODE_DIR/bin:$PATH"
 
-    print_success "Node.js $NODE_VERSION installed"
+    # Verify installation
+    if [[ ! -f "$NODE_DIR/bin/node" ]] || [[ ! -x "$NODE_DIR/bin/node" ]]; then
+        print_error "Node.js binary not found or not executable after installation"
+        exit 1
+    fi
+
+    if [[ ! -f "$NODE_DIR/bin/npm" ]] || [[ ! -x "$NODE_DIR/bin/npm" ]]; then
+        print_error "npm binary not found or not executable after installation"
+        exit 1
+    fi
+
+    # Verify node can actually run
+    if ! "$NODE_DIR/bin/node" --version &> /dev/null; then
+        print_error "Node.js binary exists but cannot execute"
+        exit 1
+    fi
+
+    local ACTUAL_VERSION=$("$NODE_DIR/bin/node" --version)
+    print_success "Node.js $ACTUAL_VERSION installed and verified"
     return 0
 }
 
@@ -119,13 +178,37 @@ ensure_nodejs() {
 setup_yarn() {
     print_info "Setting up Yarn via corepack..."
 
+    # Verify corepack is available
+    if ! command -v corepack &> /dev/null; then
+        print_error "corepack not found - it should be included with Node.js"
+        exit 1
+    fi
+
     # Enable corepack
-    corepack enable
+    if ! corepack enable; then
+        print_error "Failed to enable corepack"
+        exit 1
+    fi
 
     # Prepare yarn latest
-    corepack prepare yarn@stable --activate
+    if ! corepack prepare yarn@stable --activate; then
+        print_error "Failed to prepare yarn"
+        exit 1
+    fi
 
-    print_success "Yarn $(yarn --version) ready"
+    # Verify yarn is available and working
+    if ! command -v yarn &> /dev/null; then
+        print_error "yarn not available after corepack setup"
+        exit 1
+    fi
+
+    if ! yarn --version &> /dev/null; then
+        print_error "yarn exists but cannot execute"
+        exit 1
+    fi
+
+    local YARN_VERSION=$(yarn --version)
+    print_success "Yarn $YARN_VERSION ready and verified"
     return 0
 }
 
@@ -147,7 +230,36 @@ EOF
     fi
 
     # Install the package
-    YARN_NODE_LINKER=node-modules yarn add "$NPM_PACKAGE"
+    if ! YARN_NODE_LINKER=node-modules yarn add "$NPM_PACKAGE"; then
+        print_error "Failed to install $NPM_PACKAGE"
+        exit 1
+    fi
+
+    # Verify installation
+    if [[ ! -d "node_modules/$NPM_PACKAGE" ]]; then
+        print_error "Package directory not found after installation"
+        exit 1
+    fi
+
+    local MAIN_FILE="$INSTALL_DIR/node_modules/$NPM_PACKAGE/dist/index.js"
+    if [[ ! -f "$MAIN_FILE" ]]; then
+        print_error "Main entry file not found: $MAIN_FILE"
+        exit 1
+    fi
+
+    # Verify package.json exists and can be read
+    local PKG_JSON="$INSTALL_DIR/node_modules/$NPM_PACKAGE/package.json"
+    if [[ ! -f "$PKG_JSON" ]]; then
+        print_error "Package manifest not found: $PKG_JSON"
+        exit 1
+    fi
+
+    # Get and verify installed version
+    local INSTALLED_VERSION=$(node -p "require('./node_modules/$NPM_PACKAGE/package.json').version" 2>/dev/null)
+    if [[ -z "$INSTALLED_VERSION" ]]; then
+        print_error "Could not determine installed version"
+        exit 1
+    fi
 
     # Create .env file in data dir with environment variables
     local ENV_FILE="$DATA_DIR/.env"
@@ -161,7 +273,7 @@ EOF
         print_success ".env file created at $DATA_DIR/.env"
     fi
 
-    print_success "$NPM_PACKAGE installed"
+    print_success "$NPM_PACKAGE $INSTALLED_VERSION installed and verified"
     return 0
 }
 
@@ -209,8 +321,7 @@ create_cli_wrapper() {
     cp "$0" "$BIN_DIR/fdm-monster" 2>/dev/null || curl -fsSL "$INSTALL_SCRIPT_URL" -o "$BIN_DIR/fdm-monster"
     chmod +x "$BIN_DIR/fdm-monster"
 
-    cp "$BIN_DIR/fdm-monster" "$BIN_DIR/fdmm"
-    chmod +x "$BIN_DIR/fdmm"
+    ln -sf "$BIN_DIR/fdm-monster" "$BIN_DIR/fdmm"
 
     if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
         local SHELL_RC="$HOME/.bashrc"
@@ -355,8 +466,7 @@ handle_command() {
 
                 mv "$TEMP_FILE" "$BIN_DIR/fdm-monster"
                 chmod +x "$BIN_DIR/fdm-monster"
-                cp "$BIN_DIR/fdm-monster" "$BIN_DIR/fdmm"
-                chmod +x "$BIN_DIR/fdmm"
+                ln -sf "$BIN_DIR/fdm-monster" "$BIN_DIR/fdmm"
 
                 if [[ -n "$NEW_VERSION" ]]; then
                     print_success "CLI updated successfully to v$NEW_VERSION"
@@ -374,6 +484,7 @@ handle_command() {
         install)
             print_banner
             check_root
+            check_dependencies
             detect_platform
             ensure_nodejs
             setup_yarn
@@ -435,7 +546,7 @@ handle_command() {
             echo "  fdmm status                               # Check status"
             echo "  fdmm backup                               # Create backup"
             echo "  fdmm upgrade                              # Upgrade to latest"
-            echo "  fdmm upgrade 1.2.3                        # Upgrade to specific version"
+            echo "  fdmm upgrade x.y.z                        # Upgrade to specific version"
             echo "  fdmm update-cli                           # Update CLI tool from default URL"
             echo "  fdmm update-cli https://example.com/cli   # Update CLI from custom URL"
             echo "  fdmm version                              # Show CLI version"
@@ -529,6 +640,7 @@ print_instructions() {
     echo ""
     echo -e "  ${BLUE}Documentation:${NC} https://docs.fdm-monster.net"
     echo -e "  ${BLUE}Discord:${NC} https://discord.gg/mwA8uP8CMc"
+    echo -e "  ${BLUE}Github Issues:${NC} https://github.com/fdm-monster/fdm-monster/issues"
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
@@ -547,6 +659,7 @@ main() {
     # Otherwise, run installer
     print_banner
     check_root
+    check_dependencies
     detect_platform
     ensure_nodejs
     setup_yarn
