@@ -124,7 +124,7 @@ cat << EOM
 
 
   To start your container execute:
-    docker compose -f FDMM-mDNA-docker-compose.yml up -d
+    docker compose -f FDMM-mDNS-docker-compose.yml up -d
 
   Enjoy using FDM Monster.
     Docs    > https://docs.fdm-monster.net/docs
