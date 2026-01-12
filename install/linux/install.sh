@@ -4,18 +4,21 @@
 
 set -e
 
-# Colors
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m'
 
-# Configuration
-CLI_VERSION="1.0.7"
-NODE_MAJOR=24
-NODE_VERSION="24.12.0"
-NPM_PACKAGE="@fdm-monster/server"
-INSTALL_DIR="$HOME/.fdm-monster"
+readonly CLI_VERSION="1.0.8"
+
+# Override configuration from environment variables
+NODE_VERSION="${FDMM_NODE_VERSION:-24.12.0}"
+NPM_PACKAGE="${FDMM_NPM_PACKAGE:-@fdm-monster/server}"
+INSTALL_DIR="${FDMM_INSTALL_DIR:-$HOME/.fdm-monster}"
+DEFAULT_PORT="${FDMM_SERVER_PORT:-4000}"
 DATA_DIR="$HOME/.fdm-monster-data"
-DEFAULT_PORT=4000
-INSTALL_SCRIPT_URL="${FDM_INSTALL_URL:-https://raw.githubusercontent.com/fdm-monster/fdm-monster-scripts/main/install/linux/install.sh}"
+INSTALL_SCRIPT_URL="${FDMM_INSTALL_URL:-https://raw.githubusercontent.com/fdm-monster/fdm-monster-scripts/main/install/linux/install.sh}"
 
 # Helper functions
 print_banner() {
@@ -61,6 +64,21 @@ check_root() {
         print_error "Do not run as root"
         exit 1
     fi
+    return 0
+}
+
+validate_semver() {
+    local version="$1"
+    if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}✗${NC} Invalid semver format: $version (expected x.y.z format)"
+        exit 1
+    fi
+
+    return 0
+}
+
+version_gt() {
+    [[ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$1" ]]
     return 0
 }
 
@@ -158,22 +176,32 @@ install_nodejs() {
 }
 
 ensure_nodejs() {
-    if command -v node &> /dev/null; then
-        local CURRENT_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-        if [[ "$CURRENT_VERSION" -ge "$NODE_MAJOR" ]]; then
-            print_success "Node.js $(node -v) detected"
-            return 0
+    local NODE_DIR="$INSTALL_DIR/nodejs"
+    local NODE_BINARY="$NODE_DIR/bin/node"
+
+    if [[ -f "$NODE_BINARY" ]]; then
+        local CURRENT_VERSION=$("$NODE_BINARY" -v 2>/dev/null | sed 's/^v//')
+
+        if [[ -z "$CURRENT_VERSION" ]]; then
+            print_warning "Node.js binary found but version check failed. Reinstalling..."
+            rm -rf "$NODE_DIR"
+        elif version_gt "$NODE_VERSION" "$CURRENT_VERSION"; then
+            print_warning "Node.js $CURRENT_VERSION detected, upgrading to $NODE_VERSION..."
+            rm -rf "$NODE_DIR"
+        else
+            print_success "Node.js $CURRENT_VERSION detected (>= $NODE_VERSION)"
         fi
-        print_warning "Node.js $CURRENT_VERSION too old, installing Node.js $NODE_MAJOR..."
     fi
 
-    install_nodejs
+    [[ ! -f "$NODE_BINARY" ]] && install_nodejs
 
-    # Persist PATH for future sessions
+    # Ensure PATH is set for current and future sessions
+    export PATH="$NODE_DIR/bin:$PATH"
     local SHELL_RC="$HOME/.bashrc"
     [[ -f "$HOME/.zshrc" ]] && SHELL_RC="$HOME/.zshrc"
     grep -q "$INSTALL_DIR/nodejs/bin" "$SHELL_RC" 2>/dev/null || \
         echo "export PATH=\"$INSTALL_DIR/nodejs/bin:\$PATH\"" >> "$SHELL_RC"
+
     return 0
 }
 
@@ -342,7 +370,7 @@ create_cli_wrapper() {
 
         print_success "CLI created at $BIN_DIR/fdm-monster (alias: fdmm). To use immediately, copy and run:"
         echo ""
-        echo -e "\033[1;32m    export PATH=\"\$PATH:$BIN_DIR\"\033[0m"
+        echo -e "\033[1;32m    export PATH=\"$INSTALL_DIR/nodejs/bin:\$PATH:$BIN_DIR\"\033[0m"
         echo ""
         print_info "(Or restart your terminal)"
     else
@@ -659,6 +687,8 @@ print_instructions() {
 
 # Main function - handles both install and CLI commands
 main() {
+    validate_semver "$NODE_VERSION"
+
     # If called with a command argument, handle it as CLI
     if [[ $# -gt 0 ]]; then
         handle_command "$@"
