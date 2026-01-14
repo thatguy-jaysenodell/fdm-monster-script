@@ -1,21 +1,50 @@
 #!/bin/bash
 # FDM Monster One-Click Installer for Linux
 # Usage: curl -fsSL https://raw.githubusercontent.com/fdm-monster/fdm-monster-scripts/main/install/linux/install.sh | bash
+#
+# ============================================================================
+# ENVIRONMENT VARIABLE OVERRIDES
+# ============================================================================
+# The following environment variables can be used to customize installation:
+#
+# FDMM_HOME                 - Home directory to use (default: $HOME)
+#                             Useful for chroot installations or custom user setups
+# FDMM_NODE_VERSION         - Node.js version to install (default: 24.12.0)
+# FDMM_NPM_PACKAGE          - NPM package to install (default: @fdm-monster/server)
+# FDMM_NPM_PACKAGE_VERSION  - NPM package version to install (default: latest)
+# FDMM_SERVER_PORT          - Server port (default: 4000)
+# FDMM_INSTALL_DIR          - Installation directory (default: $FDMM_HOME/.fdm-monster)
+# FDMM_DATA_DIR             - Data directory (default $FDMM_HOME/.fdm-monster-data)
+# FDMM_INSTALL_URL          - Installer script URL (default: GitHub main branch)
+# FDMM_OVERRIDE_ROOT        - Allow running as root (default: false, set to 'true' to override)
+#
+# Example:
+#   FDMM_NODE_VERSION="22.11.0" FDMM_SERVER_PORT="3000" bash install.sh
+#   FDMM_NPM_PACKAGE_VERSION="2.0.3" bash install.sh
+#   FDMM_OVERRIDE_ROOT=true bash install.sh
+#   FDMM_HOME=/home/myuser bash install.sh
+# ============================================================================
 
 set -e
 
-# Colors
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m'
 
-# Configuration
-CLI_VERSION="1.0.7"
-NODE_MAJOR=24
-NODE_VERSION="24.12.0"
-NPM_PACKAGE="@fdm-monster/server"
-INSTALL_DIR="$HOME/.fdm-monster"
-DATA_DIR="$HOME/.fdm-monster-data"
-DEFAULT_PORT=4000
-INSTALL_SCRIPT_URL="${FDM_INSTALL_URL:-https://raw.githubusercontent.com/fdm-monster/fdm-monster-scripts/main/install/linux/install.sh}"
+readonly CLI_VERSION="1.0.13"
+
+# Configuration (see ENVIRONMENT VARIABLE OVERRIDES section above)
+USER_HOME="${FDMM_HOME:-$HOME}"
+NODE_VERSION="${FDMM_NODE_VERSION:-24.12.0}"
+NPM_PACKAGE="${FDMM_NPM_PACKAGE:-@fdm-monster/server}"
+NPM_PACKAGE_VERSION="${FDMM_NPM_PACKAGE_VERSION:-}"
+INSTALL_DIR="${FDMM_INSTALL_DIR:-$USER_HOME/.fdm-monster}"
+DEFAULT_PORT="${FDMM_SERVER_PORT:-4000}"
+DATA_DIR="${FDMM_DATA_DIR:-$USER_HOME/.fdm-monster-data}"
+INSTALL_SCRIPT_URL="${FDMM_INSTALL_URL:-https://raw.githubusercontent.com/fdm-monster/fdm-monster-scripts/main/install/linux/install.sh}"
+OVERRIDE_ROOT="${FDMM_OVERRIDE_ROOT:-false}"
 
 # Helper functions
 print_banner() {
@@ -57,10 +86,31 @@ print_info() {
 }
 
 check_root() {
-    if [[ "$EUID" -eq 0 ]]; then
+    if [[ "$EUID" -eq 0 ]] && [[ "$OVERRIDE_ROOT" != "true" ]]; then
         print_error "Do not run as root"
+        print_info "To override this check, set FDMM_OVERRIDE_ROOT=true"
         exit 1
     fi
+
+    if [[ "$EUID" -eq 0 ]]; then
+        print_warning "Running as root (override enabled)"
+    fi
+
+    return 0
+}
+
+validate_semver() {
+    local version="$1"
+    if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}✗${NC} Invalid semver format: $version (expected x.y.z format)"
+        exit 1
+    fi
+
+    return 0
+}
+
+version_gt() {
+    [[ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$1" ]]
     return 0
 }
 
@@ -158,22 +208,32 @@ install_nodejs() {
 }
 
 ensure_nodejs() {
-    if command -v node &> /dev/null; then
-        local CURRENT_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-        if [[ "$CURRENT_VERSION" -ge "$NODE_MAJOR" ]]; then
-            print_success "Node.js $(node -v) detected"
-            return 0
+    local NODE_DIR="$INSTALL_DIR/nodejs"
+    local NODE_BINARY="$NODE_DIR/bin/node"
+
+    if [[ -f "$NODE_BINARY" ]]; then
+        local CURRENT_VERSION=$("$NODE_BINARY" -v 2>/dev/null | sed 's/^v//')
+
+        if [[ -z "$CURRENT_VERSION" ]]; then
+            print_warning "Node.js binary found but version check failed. Reinstalling..."
+            rm -rf "$NODE_DIR"
+        elif version_gt "$NODE_VERSION" "$CURRENT_VERSION"; then
+            print_warning "Node.js $CURRENT_VERSION detected, upgrading to $NODE_VERSION..."
+            rm -rf "$NODE_DIR"
+        else
+            print_success "Node.js $CURRENT_VERSION detected (>= $NODE_VERSION)"
         fi
-        print_warning "Node.js $CURRENT_VERSION too old, installing Node.js $NODE_MAJOR..."
     fi
 
-    install_nodejs
+    [[ ! -f "$NODE_BINARY" ]] && install_nodejs
 
-    # Persist PATH for future sessions
-    local SHELL_RC="$HOME/.bashrc"
-    [[ -f "$HOME/.zshrc" ]] && SHELL_RC="$HOME/.zshrc"
+    # Ensure PATH is set for current and future sessions
+    export PATH="$NODE_DIR/bin:$PATH"
+    local SHELL_RC="$USER_HOME/.bashrc"
+    [[ -f "$USER_HOME/.zshrc" ]] && SHELL_RC="$USER_HOME/.zshrc"
     grep -q "$INSTALL_DIR/nodejs/bin" "$SHELL_RC" 2>/dev/null || \
         echo "export PATH=\"$INSTALL_DIR/nodejs/bin:\$PATH\"" >> "$SHELL_RC"
+
     return 0
 }
 
@@ -215,7 +275,14 @@ setup_yarn() {
 }
 
 install_fdm_monster() {
-    print_info "Installing $NPM_PACKAGE..."
+    # Build the package specifier for installation
+    local PKG_SPEC="$NPM_PACKAGE"
+    if [[ -n "$NPM_PACKAGE_VERSION" ]]; then
+        PKG_SPEC="${NPM_PACKAGE}@${NPM_PACKAGE_VERSION}"
+        print_info "Installing $NPM_PACKAGE version $NPM_PACKAGE_VERSION..."
+    else
+        print_info "Installing $NPM_PACKAGE..."
+    fi
 
     mkdir -p "$INSTALL_DIR" "$DATA_DIR/media" "$DATA_DIR/database"
     cd "$INSTALL_DIR"
@@ -232,14 +299,15 @@ EOF
     fi
 
     # Install the package
-    if ! YARN_NODE_LINKER=node-modules yarn add "$NPM_PACKAGE"; then
-        print_error "Failed to install $NPM_PACKAGE"
+    if ! YARN_NODE_LINKER=node-modules yarn add "$PKG_SPEC"; then
+        print_error "Failed to install $PKG_SPEC"
         exit 1
     fi
 
     # Verify installation
-    if [[ ! -d "node_modules/$NPM_PACKAGE" ]]; then
-        print_error "Package directory not found after installation"
+    local MAIN_DIR="$INSTALL_DIR/node_modules/$NPM_PACKAGE"
+    if [[ ! -d "$MAIN_DIR" ]]; then
+        print_error "Package directory $MAIN_DIR not found after installation"
         exit 1
     fi
 
@@ -317,7 +385,7 @@ EOF
 create_cli_wrapper() {
     print_info "Creating CLI wrapper..."
 
-    local BIN_DIR="$HOME/.local/bin"
+    local BIN_DIR="$USER_HOME/.local/bin"
     mkdir -p "$BIN_DIR"
 
     # Try to copy the script, or download it if running from pipe
@@ -336,13 +404,13 @@ create_cli_wrapper() {
         export PATH="$PATH:$BIN_DIR"
 
         # Persist for future sessions
-        local SHELL_RC="$HOME/.bashrc"
-        [[ -f "$HOME/.zshrc" ]] && SHELL_RC="$HOME/.zshrc"
+        local SHELL_RC="$USER_HOME/.bashrc"
+        [[ -f "$USER_HOME/.zshrc" ]] && SHELL_RC="$USER_HOME/.zshrc"
         echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$SHELL_RC"
 
         print_success "CLI created at $BIN_DIR/fdm-monster (alias: fdmm). To use immediately, copy and run:"
         echo ""
-        echo -e "\033[1;32m    export PATH=\"\$PATH:$BIN_DIR\"\033[0m"
+        echo -e "\033[1;32m    export PATH=\"$INSTALL_DIR/nodejs/bin:\$PATH:$BIN_DIR\"\033[0m"
         echo ""
         print_info "(Or restart your terminal)"
     else
@@ -397,7 +465,7 @@ handle_command() {
             ;;
         logs)
             if command -v systemctl &> /dev/null; then
-                journalctl -u fdm-monster -f
+                sudo journalctl -u fdm-monster -f
             else
                 tail -f "$DATA_DIR/media/logs/fdm-monster.log"
             fi
@@ -418,6 +486,12 @@ handle_command() {
 
             print_info "Upgrading FDM Monster to $VERSION_DISPLAY..."
             $0 stop
+
+            # Ensure Node.js and Yarn are available
+            print_info "Checking FDM Monster requirements..."
+            ensure_nodejs
+            setup_yarn
+
             cd "$INSTALL_DIR"
 
             # Install package with or without version
@@ -435,7 +509,7 @@ handle_command() {
             print_success "Upgraded to version $INSTALLED_VERSION"
             ;;
         backup)
-            local BACKUP_DIR="$HOME/.fdm-monster-backups"
+            local BACKUP_DIR="$USER_HOME/.fdm-monster-backups"
             local TIMESTAMP=$(date +%Y%m%d-%H%M%S)
             local BACKUP_FILE="$BACKUP_DIR/fdm-monster-$TIMESTAMP.tar.gz"
 
@@ -466,7 +540,7 @@ handle_command() {
                 print_info "Using custom URL: $CUSTOM_URL"
             fi
 
-            local BIN_DIR="$HOME/.local/bin"
+            local BIN_DIR="$USER_HOME/.local/bin"
             local TEMP_FILE="/tmp/fdm-monster-cli-update.sh"
 
             if ! curl -fsSL "$UPDATE_URL" -o "$TEMP_FILE"; then
@@ -514,7 +588,7 @@ handle_command() {
 
             # Remove install directory and CLI
             rm -rf "$INSTALL_DIR"
-            rm -f "$HOME/.local/bin/fdm-monster" "$HOME/.local/bin/fdmm"
+            rm -f "$USER_HOME/.local/bin/fdm-monster" "$USER_HOME/.local/bin/fdmm"
 
             # Ask about data directory
             echo ""
@@ -659,6 +733,8 @@ print_instructions() {
 
 # Main function - handles both install and CLI commands
 main() {
+    validate_semver "$NODE_VERSION"
+
     # If called with a command argument, handle it as CLI
     if [[ $# -gt 0 ]]; then
         handle_command "$@"
